@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -197,6 +197,13 @@ void ddl_vidc_decode_init_codec(struct ddl_client_context *ddl)
 	vidc_1080p_set_decode_mpeg4_pp_filter(decoder->post_filter.post_filter);
 	vidc_sm_set_concealment_color(&ddl->shared_mem[ddl->command_channel],
 		DDL_CONCEALMENT_Y_COLOR, DDL_CONCEALMENT_C_COLOR);
+
+	vidc_sm_set_error_concealment_config(
+		&ddl->shared_mem[ddl->command_channel],
+		VIDC_SM_ERR_CONCEALMENT_INTER_SLICE_MB_COPY,
+		VIDC_SM_ERR_CONCEALMENT_INTRA_SLICE_COLOR_CONCEALMENT,
+		VIDC_SM_ERR_CONCEALMENT_ENABLE);
+
 	ddl_vidc_metadata_enable(ddl);
 	vidc_sm_set_metadata_start_address(&ddl->shared_mem
 		[ddl->command_channel],
@@ -256,6 +263,10 @@ void ddl_vidc_decode_init_codec(struct ddl_client_context *ddl)
 			VIDC_SM_RECOVERY_POINT_SEI);
 	ddl_context->vidc_decode_seq_start[ddl->command_channel](
 		&seq_start_param);
+
+	vidc_sm_set_decoder_stuff_bytes_consumption(
+		&ddl->shared_mem[ddl->command_channel],
+		VIDC_SM_NUM_STUFF_BYTES_CONSUME_NONE);
 }
 
 void ddl_vidc_decode_dynamic_property(struct ddl_client_context *ddl,
@@ -541,7 +552,8 @@ void ddl_vidc_encode_init_codec(struct ddl_client_context *ddl)
 	vidc_sm_set_extended_encoder_control(&ddl->shared_mem
 		[ddl->command_channel], hdr_ext_control,
 		r_cframe_skip, false, 0,
-		h263_cpfc_enable, encoder->closed_gop);
+		h263_cpfc_enable, encoder->sps_pps.sps_pps_for_idr_enable_flag,
+		encoder->closed_gop);
 	vidc_sm_set_encoder_init_rc_value(&ddl->shared_mem
 		[ddl->command_channel],
 		encoder->target_bit_rate.target_bitrate);
