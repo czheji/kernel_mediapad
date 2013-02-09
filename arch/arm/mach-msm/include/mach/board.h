@@ -445,10 +445,13 @@ struct mipi_dsi_panel_platform_data {
 	struct mipi_dsi_phy_ctrl *phy_ctrl_settings;
 };
 
+#define PANEL_NAME_MAX_LEN 50
 struct msm_fb_platform_data {
 	int (*detect_client)(const char *name);
 	int mddi_prescan;
 	int (*allow_set_offset)(void);
+	char prim_panel_name[PANEL_NAME_MAX_LEN];
+	char ext_panel_name[PANEL_NAME_MAX_LEN];
 };
 
 struct msm_hdmi_platform_data {
@@ -522,6 +525,8 @@ void msm_map_copper_io(void);
 void msm_init_irq(void);
 void msm_copper_init_irq(void);
 void vic_handle_irq(struct pt_regs *regs);
+void msm_copper_reserve(void);
+void msm_copper_very_early(void);
 
 struct mmc_platform_data;
 int msm_add_sdcc(unsigned int controller,

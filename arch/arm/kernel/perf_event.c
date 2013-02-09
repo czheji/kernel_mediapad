@@ -73,10 +73,6 @@ struct arm_pmu {
 	enum arm_perf_pmu_ids id;
 	const char	*name;
 	irqreturn_t	(*handle_irq)(int irq_num, void *dev);
-#ifdef CONFIG_SMP
-	void            (*secondary_enable)(unsigned int irq);
-	void            (*secondary_disable)(unsigned int irq);
-#endif
 	void		(*enable)(struct hw_perf_event *evt, int idx);
 	void		(*disable)(struct hw_perf_event *evt, int idx);
 	int		(*get_event_idx)(struct cpu_hw_events *cpuc,
@@ -92,6 +88,8 @@ struct arm_pmu {
 				    [PERF_COUNT_HW_CACHE_OP_MAX]
 				    [PERF_COUNT_HW_CACHE_RESULT_MAX];
 	const unsigned	(*event_map)[PERF_COUNT_HW_MAX];
+	int	(*request_pmu_irq)(int irq, irq_handler_t *irq_h);
+	void	(*free_pmu_irq)(int irq);
 	u32		raw_event_mask;
 	int		num_events;
 	u64		max_period;
@@ -396,6 +394,21 @@ static irqreturn_t armpmu_platform_irq(int irq, void *dev)
 }
 
 static int
+armpmu_generic_request_irq(int irq, irq_handler_t *handle_irq)
+{
+	return request_irq(irq, *handle_irq,
+			IRQF_DISABLED | IRQF_NOBALANCING,
+			"armpmu", NULL);
+}
+
+static void
+armpmu_generic_free_irq(int irq)
+{
+	if (irq >= 0)
+		free_irq(irq, NULL);
+}
+
+static int
 armpmu_reserve_hardware(void)
 {
 	struct arm_pmu_platdata *plat;
@@ -426,25 +439,20 @@ armpmu_reserve_hardware(void)
 		if (irq < 0)
 			continue;
 
-		err = request_irq(irq, handle_irq,
-				  IRQF_DISABLED | IRQF_NOBALANCING,
-				  "armpmu", NULL);
+		err = armpmu->request_pmu_irq(irq, &handle_irq);
+
 		if (err) {
 			pr_warning("unable to request IRQ%d for ARM perf "
 				"counters\n", irq);
 			break;
-#ifdef CONFIG_SMP
-		} else if (armpmu->secondary_enable) {
-			armpmu->secondary_enable(irq);
-#endif
 		}
 	}
 
 	if (err) {
 		for (i = i - 1; i >= 0; --i) {
 			irq = platform_get_irq(pmu_device, i);
-			if (irq >= 0)
-				free_irq(irq, NULL);
+
+			armpmu->free_pmu_irq(irq);
 		}
 		release_pmu(pmu_device);
 		pmu_device = NULL;
@@ -460,13 +468,7 @@ armpmu_release_hardware(void)
 
 	for (i = pmu_device->num_resources - 1; i >= 0; --i) {
 		irq = platform_get_irq(pmu_device, i);
-		if (irq >= 0) {
-			free_irq(irq, NULL);
-#ifdef CONFIG_SMP
-			if (armpmu->secondary_disable)
-				armpmu->secondary_disable(irq);
-#endif
-		}
+		armpmu->free_pmu_irq(irq);
 	}
 	armpmu->stop();
 
@@ -649,6 +651,26 @@ static void armpmu_update_counters(void)
 	}
 }
 
+static int cpu_has_active_perf(void)
+{
+	int idx;
+	struct cpu_hw_events *cpuc = &__get_cpu_var(cpu_hw_events);
+
+	if (!armpmu)
+		return 0;
+
+	for (idx = 0; idx <= armpmu->num_events; ++idx) {
+		struct perf_event *event = cpuc->events[idx];
+
+		if (event)
+			/*Even one event's existence is good enough.*/
+			return 1;
+
+	}
+
+	return 0;
+}
+
 static struct pmu pmu = {
 	.pmu_enable	= armpmu_enable,
 	.pmu_disable	= armpmu_disable,
@@ -674,16 +696,18 @@ static int perf_cpu_pm_notifier(struct notifier_block *self, unsigned long cmd,
 {
 	switch (cmd) {
 	case CPU_PM_ENTER:
-		armpmu_update_counters();
-		perf_pmu_disable(&pmu);
+		if (cpu_has_active_perf()) {
+			armpmu_update_counters();
+			perf_pmu_disable(&pmu);
+		}
 		break;
 
 	case CPU_PM_ENTER_FAILED:
 	case CPU_PM_EXIT:
-		if (armpmu && armpmu->reset)
+		if (cpu_has_active_perf() && armpmu->reset) {
 			armpmu->reset(NULL);
-		perf_pmu_enable(&pmu);
-
+			perf_pmu_enable(&pmu);
+		}
 		break;
 	}
 

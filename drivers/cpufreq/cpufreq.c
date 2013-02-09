@@ -298,8 +298,23 @@ void cpufreq_notify_transition(struct cpufreq_freqs *freqs, unsigned int state)
 	}
 }
 EXPORT_SYMBOL_GPL(cpufreq_notify_transition);
+/**
+ * cpufreq_notify_utilization - notify CPU userspace about CPU utilization
+ * change
+ *
+ * This function is called everytime the CPU load is evaluated by the
+ * ondemand governor. It notifies userspace of cpu load changes via sysfs.
+ */
+void cpufreq_notify_utilization(struct cpufreq_policy *policy,
+		unsigned int util)
+{
+	if (policy)
+		policy->util = util;
 
+	if (policy->util >= MIN_CPU_UTIL_NOTIFY)
+		sysfs_notify(&policy->kobj, NULL, "cpu_utilization");
 
+}
 
 /*********************************************************************
  *                          SYSFS INTERFACE                          *
@@ -387,6 +402,7 @@ show_one(cpuinfo_transition_latency, cpuinfo.transition_latency);
 show_one(scaling_min_freq, min);
 show_one(scaling_max_freq, max);
 show_one(scaling_cur_freq, cur);
+show_one(cpu_utilization, util);
 
 static int __cpufreq_set_policy(struct cpufreq_policy *data,
 				struct cpufreq_policy *policy);
@@ -456,6 +472,9 @@ static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 	unsigned int ret = -EINVAL;
 	char	str_governor[16];
 	struct cpufreq_policy new_policy;
+	char *envp[3];
+	char buf1[64];
+	char buf2[64];
 
 	ret = cpufreq_get_policy(&new_policy, policy->cpu);
 	if (ret)
@@ -475,6 +494,15 @@ static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 
 	policy->user_policy.policy = policy->policy;
 	policy->user_policy.governor = policy->governor;
+
+	sysfs_notify(&policy->kobj, NULL, "scaling_governor");
+
+	snprintf(buf1, sizeof(buf1), "GOV=%s", policy->governor->name);
+	snprintf(buf2, sizeof(buf2), "CPU=%u", policy->cpu);
+	envp[0] = buf1;
+	envp[1] = buf2;
+	envp[2] = NULL;
+	kobject_uevent_env(cpufreq_global_kobject, KOBJ_ADD, envp);
 
 	if (ret)
 		return ret;
@@ -591,6 +619,68 @@ static ssize_t show_bios_limit(struct cpufreq_policy *policy, char *buf)
 	return sprintf(buf, "%u\n", policy->cpuinfo.max_freq);
 }
 
+#ifdef CONFIG_CPU_VOLTAGE_TABLE
+
+extern ssize_t acpuclk_get_vdd_levels_str(char *buf);
+extern void acpuclk_set_vdd(unsigned acpu_khz, int vdd);
+
+static ssize_t show_vdd_levels(struct kobject *a, struct attribute *b, char *buf) {
+	return acpuclk_get_vdd_levels_str(buf);
+}
+
+static ssize_t store_vdd_levels(struct kobject *a, struct attribute *b, const char *buf, size_t count) {
+
+	int i = 0, j;
+	int pair[2] = { 0, 0 };
+	int sign = 0;
+
+	if (count < 1)
+		return 0;
+
+	if (buf[0] == '-') {
+		sign = -1;
+		i++;
+	}
+	else if (buf[0] == '+') {
+		sign = 1;
+		i++;
+	}
+
+	for (j = 0; i < count; i++) {
+	
+		char c = buf[i];
+		
+		if ((c >= '0') && (c <= '9')) {
+			pair[j] *= 10;
+			pair[j] += (c - '0');
+		}
+		else if ((c == ' ') || (c == '\t')) {
+			if (pair[j] != 0) {
+				j++;
+
+				if ((sign != 0) || (j > 1))
+					break;
+			}
+		}
+		else
+			break;
+	}
+
+	if (sign != 0) {
+		if (pair[0] > 0)
+			acpuclk_set_vdd(0, sign * pair[0]);
+	}
+	else {
+		if ((pair[0] > 0) && (pair[1] > 0))
+			acpuclk_set_vdd((unsigned)pair[0], pair[1]);
+		else
+			return -EINVAL;
+	}
+	return count;
+}
+
+#endif	/* CONFIG_CPU_VOLTAGE_TABLE */
+
 cpufreq_freq_attr_ro_perm(cpuinfo_cur_freq, 0400);
 cpufreq_freq_attr_ro(cpuinfo_min_freq);
 cpufreq_freq_attr_ro(cpuinfo_max_freq);
@@ -601,10 +691,15 @@ cpufreq_freq_attr_ro(scaling_cur_freq);
 cpufreq_freq_attr_ro(bios_limit);
 cpufreq_freq_attr_ro(related_cpus);
 cpufreq_freq_attr_ro(affected_cpus);
+cpufreq_freq_attr_ro(cpu_utilization);
 cpufreq_freq_attr_rw(scaling_min_freq);
 cpufreq_freq_attr_rw(scaling_max_freq);
 cpufreq_freq_attr_rw(scaling_governor);
 cpufreq_freq_attr_rw(scaling_setspeed);
+
+#ifdef CONFIG_CPU_VOLTAGE_TABLE
+define_one_global_rw(vdd_levels);
+#endif
 
 static struct attribute *default_attrs[] = {
 	&cpuinfo_min_freq.attr,
@@ -613,6 +708,7 @@ static struct attribute *default_attrs[] = {
 	&scaling_min_freq.attr,
 	&scaling_max_freq.attr,
 	&affected_cpus.attr,
+	&cpu_utilization.attr,
 	&related_cpus.attr,
 	&scaling_governor.attr,
 	&scaling_driver.attr,
@@ -620,6 +716,18 @@ static struct attribute *default_attrs[] = {
 	&scaling_setspeed.attr,
 	NULL
 };
+
+#ifdef CONFIG_CPU_VOLTAGE_TABLE
+static struct attribute *vddtbl_attrs[] = {
+	&vdd_levels.attr,
+	NULL
+};
+
+static struct attribute_group vddtbl_attr_group = {
+	.attrs = vddtbl_attrs,
+	.name = "vdd_table",
+};
+#endif	/* CONFIG_CPU_VOLTAGE_TABLE */
 
 struct kobject *cpufreq_global_kobject;
 EXPORT_SYMBOL(cpufreq_global_kobject);
@@ -1925,6 +2033,9 @@ EXPORT_SYMBOL_GPL(cpufreq_unregister_driver);
 static int __init cpufreq_core_init(void)
 {
 	int cpu;
+#ifdef CONFIG_CPU_VOLTAGE_TABLE
+	int rc;
+#endif	/* CONFIG_CPU_VOLTAGE_TABLE */
 
 	for_each_possible_cpu(cpu) {
 		per_cpu(cpufreq_policy_cpu, cpu) = -1;
@@ -1935,6 +2046,10 @@ static int __init cpufreq_core_init(void)
 						&cpu_sysdev_class.kset.kobj);
 	BUG_ON(!cpufreq_global_kobject);
 	register_syscore_ops(&cpufreq_syscore_ops);
+
+#ifdef CONFIG_CPU_VOLTAGE_TABLE
+	rc = sysfs_create_group(cpufreq_global_kobject, &vddtbl_attr_group);
+#endif	/* CONFIG_CPU_VOLTAGE_TABLE */
 
 	return 0;
 }

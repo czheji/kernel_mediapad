@@ -127,14 +127,25 @@ static int audio_open(struct inode *inode, struct file *file)
 		audio->buf_cfg.meta_info_enable = 0x01;
 	} else if ((file->f_mode & FMODE_WRITE) &&
 			!(file->f_mode & FMODE_READ)) {
-		pr_err("%s: Tunnel Mode not supported\n", __func__);
-		return -EACCES;
+		rc = q6asm_open_write(audio->ac, FORMAT_MP3);
+		if (rc < 0) {
+			pr_err("T mode Open failed rc=%d\n", rc);
+			rc = -ENODEV;
+			goto fail;
+		}
+		audio->feedback = TUNNEL_MODE;
+		audio->buf_cfg.meta_info_enable = 0x00;
 	} else {
 		pr_err("Not supported mode\n");
 		rc = -EACCES;
 		goto fail;
 	}
 	rc = audio_aio_open(audio, file);
+	if (IS_ERR_OR_NULL(audio)) {
+		pr_err("%s: audio_aio_open failed\n", __func__);
+		rc = -EACCES;
+		goto fail;
+	}
 
 #ifdef CONFIG_DEBUG_FS
 	snprintf(name, sizeof name, "msm_mp3_%04x", audio->ac->session);
